@@ -19,3 +19,5 @@ jobs:
 
     - name: Deploy
       uses: DefangLabs/defang-github-action@v1.3.2
+      with:
+        cli-version: nightly

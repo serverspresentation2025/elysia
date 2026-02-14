@@ -1,15 +1,32 @@
 {
   "name": "app",
   "version": "1.0.50",
+  "description": "Production-ready Elysia + Bun application",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "dev": "bun run --watch src/index.ts"
+    "dev": "bun run --watch src/index.ts",
+    "start": "bun src/index.ts",
+    "build": "bun build src/index.ts --compile --minify --sourcemap --outfile dist/app",
+    "test": "bun test",
+    "typecheck": "bun tsc --noEmit",
+    "lint": "echo 'Add linter configuration as needed'",
+    "clean": "rm -rf dist"
   },
   "dependencies": {
     "elysia": "latest"
   },
   "devDependencies": {
+    "@types/bun": "latest",
     "bun-types": "latest"
   },
-  "module": "src/index.js"
+  "keywords": [
+    "elysia",
+    "bun",
+    "typescript",
+    "web-server",
+    "production"
+  ],
+  "engines": {
+    "bun": ">=1.0.0"
+  },
+  "module": "src/index.ts"
 }

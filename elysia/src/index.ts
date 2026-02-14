@@ -1,12 +1,160 @@
 import { Elysia } from "elysia";
 
+// Configuration from environment variables
+const config = {
+  port: parseInt(process.env.PORT || "3000"),
+  hostname: process.env.HOSTNAME || "0.0.0.0",
+  nodeEnv: process.env.NODE_ENV || "development",
+  logLevel: process.env.LOG_LEVEL || "info",
+};
+
+// Structured logging utility
+const logger = {
+  info: (message: string, meta?: Record<string, any>) => {
+    console.log(JSON.stringify({
+      level: "info",
+      timestamp: new Date().toISOString(),
+      message,
+      ...meta,
+    }));
+  },
+  error: (message: string, error?: Error, meta?: Record<string, any>) => {
+    console.error(JSON.stringify({
+      level: "error",
+      timestamp: new Date().toISOString(),
+      message,
+      error: error?.message,
+      stack: error?.stack,
+      ...meta,
+    }));
+  },
+  warn: (message: string, meta?: Record<string, any>) => {
+    console.warn(JSON.stringify({
+      level: "warn",
+      timestamp: new Date().toISOString(),
+      message,
+      ...meta,
+    }));
+  },
+};
+
 const app = new Elysia()
+  // Security headers middleware
+  .onAfterHandle(({ set }) => {
+    set.headers["X-Content-Type-Options"] = "nosniff";
+    set.headers["X-Frame-Options"] = "DENY";
+    set.headers["X-XSS-Protection"] = "1; mode=block";
+    set.headers["Referrer-Policy"] = "strict-origin-when-cross-origin";
+    set.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()";
+    
+    if (config.nodeEnv === "production") {
+      set.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains";
+    }
+  })
+  
+  // Request logging middleware
+  .onRequest(({ request, set }) => {
+    const startTime = Date.now();
+    set.headers["X-Request-ID"] = crypto.randomUUID();
+    
+    logger.info("Incoming request", {
+      method: request.method,
+      url: request.url,
+      userAgent: request.headers.get("user-agent"),
+    });
+    
+    // Store start time for response logging
+    (request as any)._startTime = startTime;
+  })
+  
+  // Response logging middleware
+  .onAfterHandle(({ request, set }) => {
+    const duration = Date.now() - ((request as any)._startTime || Date.now());
+    logger.info("Request completed", {
+      method: request.method,
+      url: request.url,
+      statusCode: set.status,
+      duration: `${duration}ms`,
+    });
+  })
+  
+  // Global error handling
+  .onError(({ code, error, set, request }) => {
+    logger.error("Request error", error, {
+      code,
+      method: request.method,
+      url: request.url,
+    });
+
+    if (code === "NOT_FOUND") {
+      set.status = 404;
+      return {
+        error: "Not Found",
+        message: "The requested resource was not found",
+        timestamp: new Date().toISOString(),
+      };
+    }
+
+    if (code === "VALIDATION") {
+      set.status = 400;
+      return {
+        error: "Validation Error",
+        message: error.message,
+        timestamp: new Date().toISOString(),
+      };
+    }
+
+    if (code === "INTERNAL_SERVER_ERROR") {
+      set.status = 500;
+      return {
+        error: "Internal Server Error",
+        message: config.nodeEnv === "production" 
+          ? "An unexpected error occurred" 
+          : error.message,
+        timestamp: new Date().toISOString(),
+      };
+    }
+
+    set.status = 500;
+    return {
+      error: "Error",
+      message: config.nodeEnv === "production" 
+        ? "An error occurred processing your request" 
+        : error.message,
+      timestamp: new Date().toISOString(),
+    };
+  })
+  
+  // Health check endpoint for monitoring and load balancers
+  .get("/health", () => ({
+    status: "healthy",
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    environment: config.nodeEnv,
+  }))
+  
+  // Readiness check endpoint
+  .get("/ready", () => ({
+    status: "ready",
+    timestamp: new Date().toISOString(),
+  }))
+  
+  // Metrics endpoint (basic)
+  .get("/metrics", () => ({
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    memory: process.memoryUsage(),
+    nodeVersion: process.version,
+  }))
+  
+  // Main application route
   .get("/", () => `
     <!DOCTYPE html>
     <html lang="en">
     <head>
       <meta charset="UTF-8">
       <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <meta name="description" content="Cloud-deployed application using Defang, AWS, and modern web technologies">
       <title>Defang Deployment</title>
       <style>
         * {
@@ -218,10 +366,41 @@ const app = new Elysia()
     </html>
   `)
   .listen({
-    hostname: "0.0.0.0",
-    port: 3000,
+    hostname: config.hostname,
+    port: config.port,
   });
 
-console.log(
-  `🦊 Elysia is running at ${app.server?.hostname}:${app.server?.port}`
-);
+logger.info("Server started", {
+  hostname: app.server?.hostname,
+  port: app.server?.port,
+  environment: config.nodeEnv,
+});
+
+// Graceful shutdown handling
+const shutdown = async (signal: string) => {
+  logger.info("Shutdown signal received", { signal });
+  
+  try {
+    await app.stop();
+    logger.info("Server stopped gracefully");
+    process.exit(0);
+  } catch (error) {
+    logger.error("Error during shutdown", error as Error);
+    process.exit(1);
+  }
+};
+
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));
+
+// Unhandled rejection handling
+process.on("unhandledRejection", (reason, promise) => {
+  logger.error("Unhandled Rejection", new Error(String(reason)), {
+    promise: String(promise),
+  });
+});
+
+process.on("uncaughtException", (error) => {
+  logger.error("Uncaught Exception", error);
+  process.exit(1);
+});
